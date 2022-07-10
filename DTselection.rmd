@@ -36,9 +36,6 @@ palette <- c("#FF6A10", "#6E6E6E", "#C37E00", "#7F8700", "#2B8700", "#00802F", "
 # Take a look at the colors
 # pie(rep(1, length(palette)), col = palette, labels = palette)
 
-# Declare font for plotting
-windowsFonts(Chevin = windowsFont("OP Chevin Pro Light"))
-
 # Wrap text
 wrap_text <- function(x, ...) {
   paste(strwrap(x, ...), collapse = "\n")
