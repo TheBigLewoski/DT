@@ -1,0 +1,728 @@
+---
+title: "Downturn"
+date: "2.6.2022"
+output: html_document
+
+params:
+  user_path: 
+  base_path: 
+--- 
+
+# Essential libraries and themes: 
+```{r Load libraries, message=FALSE}
+.libPaths(paste0(params$user_path, ""))
+
+# Essential libraries for plotting
+library(readxl)
+library(RODBC)
+library(ggplot2)
+library(dplyr)
+library(gridExtra)
+library(MASS)
+library(scales)
+library(reshape2)
+library(data.table)
+library(stringr)
+library(tidyverse)
+library(zoo)
+library(ggpmisc)
+library(quantmod)
+library(openxlsx)
+
+#Color palette and font for plotting & data simulation
+# Color palette for plotting
+op_palette <- c("#FF6A10", "#6E6E6E", "#C37E00", "#7F8700", "#2B8700", "#00802F", "#00765D", "#E0E0E0", "#FFA26B", "#CC9E4D", "#969742", "#628D47", "#297E53", "#006D5E", "#A5A5A5", "#A23C00", "#8F5D00", "#757600", "#548A2B", "#1A9A5E", "#00A981")
+
+# Take a look at the colors
+# pie(rep(1, length(op_palette)), col = op_palette, labels = op_palette)
+
+# Declare font for plotting
+windowsFonts(Chevin = windowsFont("OP Chevin Pro Light"))
+
+# Wrap text
+wrap_text <- function(x, ...) {
+  paste(strwrap(x, ...), collapse = "\n")
+}
+
+# Table formation
+format_save_table <- function(results, path) {
+  library(formattable)
+  rownames(results) <- c()
+  ft <- formattable(results,
+                    align = c("l", rep("c", NCOL(results) - 1)),
+                    list(`Variable` = formatter("span", style = ~ style(color = "darkgrey", font.weight = "bold"))))
+  print(ft)
+  library("htmltools")
+  library("webshot")
+  webshot::install_phantomjs()
+  # Exporting result table as png
+  export_formattable <- function(f, file, width = "100%", height = NULL, background = "white", delay = 0.2) {
+    w <- as.htmlwidget(f, width = width, height = height)
+    path <- html_print(w, background = background, viewer = NULL)
+    url <- paste0("file:///", gsub("\\\\", "/", normalizePath(path)))
+    webshot(url,
+            file = file,
+            selector = ".formattable_widget",
+            delay = delay)
+  }
+  if (!is.null(path)) {
+    export_formattable(ft, paste0(path))
+  }
+}
+```
+###############
+# 1. Functions
+###############
+
+Analyzer: Function that analyzes the provided time series by the variable date
+@param: 
+  dat: dataset with the time series
+  parameter: Column of the dataset that wants to be analyzed
+  parameter_name: Readble name of the parameter
+  suffix: name that can be added to the output files
+  min: (0): the downturn is ifentified if the time series reaches a minimum; (1): the downturn is ifentified if the time series reaches a maximum
+@output: 
+  Plots: 
+    parameter_name_Vs_Date.jpeg: Identification of one downturn period (section 15.3.5)
+    parameter_name_Vs_Date_Local.jpeg: Identification of different downturn periods (section 15.3.6)
+  Datasets:
+    input dataset with the columns downturn and downturn_local, for the one downturn identification and for the multiple downturn identification respectively
+
+```{r Analyzing Function, include=TRUE, warning=FALSE, message=FALSE}
+analyzer <- function(dat, parameter, parameter_name, suffix = "", min = 0) {
+  parameter_enq <- enquo(parameter)
+  #Calculate thresholds
+  summary_table <- dat %>%
+    summarize("Max" = max(!!parameter_enq, na.rm = T), "Min" = min(!!parameter_enq, na.rm = T), "P25" = quantile(!!parameter_enq, c(.25), na.rm = T), "P75" = quantile(!!parameter_enq, c(.75), na.rm = T)) %>%
+    mutate(WDT = abs(P75 - P25) / 10, final_threshold_min = Min + abs(P75 - P25) / 10, final_threshold_max = Max - abs(P75 - P25) / 10)
+  #Round numbers
+  is_num <- sapply(summary_table, is.numeric)
+  summary_table[is_num] <- lapply(summary_table[is_num], round, 3)
+  colors <- colorRampPalette(c("#FEB0B0", "#FFFFFF"))(2) #FFFFFF FEB0B0 7EFEA9
+  # Plot results
+  if (min == 1) {
+    # Case when the macro-economic variable experiences minimums in crisis periods
+    dat <- dat %>%
+      mutate("downturn" = ifelse(!!parameter_enq > summary_table$final_threshold_min | is.na(!!parameter_enq), "No Downturn", "Downturn"))
+    # Calculate duration of downturn
+    dat$previous_period <- lag(dat$downturn, 1)
+    j <- 0
+    for (i in 1:nrow(dat)) {
+      if (dat[i, "downturn"] == "Downturn" & (dat[i, "downturn"] != dat[i, "previous_period"] | is.na(dat[i, "previous_period"]))) {
+        j <- j + 1
+        dat[i, "downturn"]  <- paste0("Downturn", j)
+      }
+      if (dat[i, "downturn"] == "Downturn") {
+        dat[i, "downturn"]  <- paste0("Downturn", j)
+      }
+    }
+    # Create downturn flag
+    dat$downturn <- as.factor(dat$downturn)
+    # Filter DT periods less than 12 months
+    summary <- dat %>%
+      group_by(downturn) %>%
+      summarise(Count = n(), Min = min(!!parameter_enq, na.rm = T), first = dplyr::first(date)) %>% 
+      filter(Count < 4) %>%
+      slice(which.min(Min))
+    # Increase 4 quarters for DT periods less than 12 months  
+    for (i in unique(summary$first)) {
+      start <- which(dat$date == i)
+      end <- which(dat$date == i) + 3
+      dat[start:end, "downturn"] <- dat[start, "downturn"]
+    }
+    dat$downturn <- ifelse(substr(dat$downturn, 1, 1) == "D", "Downturn", "No Downturn")
+    print(unique(dat$downturn))
+    # Plot results
+    plot_dates <- ggplot(data = dat, aes(x = date, group = 1)) +
+      geom_line(aes_(y = parameter_enq, colour = parameter_name), size = 1) +
+      geom_line(aes(y = summary_table$final_threshold_min, colour = "Min Threshold"), size = 1, linetype = "dashed") +
+      geom_line(aes(y = summary_table$P25, colour = "Pctl 25% Threshold"), size = 1, linetype = "dashed") +
+      geom_tile(aes(y = 0, height = Inf, fill = downturn), alpha = 0.5) +
+      theme_minimal() +
+      theme(axis.text.x = element_text(angle = 60), text = element_text(family = "Chevin", size = 15)) +
+      labs(title = wrap_text(paste0(parameter_name, " by Date "), 50), subtitle =  paste0("Downturn: ", summary$first, "; Min:", summary_table$Min, " Interval: ", summary_table$WDT), x = "Date", y = parameter_name) +
+      scale_color_manual(name = parameter_name, values = op_palette, guide = guide_legend(fill = NULL, colour = op_palette)) +
+      scale_fill_manual(values = colors)
+    # Save Plot
+    ggsave(plot_dates, file = paste0(params$user_path, params$base_path,  "Plots/", suffix, "_", parameter_name, "_Vs_Date", ".jpeg"),  width = 8, units = "in")
+    # Find local minimum
+    dat <- data.frame(dat)
+    col <- dat %>%
+      dplyr::select(!!parameter_enq)
+    local_ <- dat[findPeaks(unlist(-col)), ]
+    summary_table_locals <- local_ %>%
+      summarize("point" = !!parameter_enq, "P25" = summary_table$P25, "P75" = summary_table$P75) %>%
+      mutate(WDT = abs(P75 - P25) / 10, final_threshold_min = point + abs(P75 - P25) / 10) %>%
+      filter(final_threshold_min < summary_table$P25)
+    # Create downturn flag
+    dat <- dat %>%
+      mutate(downturn_local = ifelse(!!parameter_enq > summary_table_locals$final_threshold_min | is.na(!!parameter_enq), "No Downturn", "Downturn"))
+    # Calculate duration of downturn
+    dat$previous_period <- lag(dat$downturn_local, 1)
+    j <- 0
+    for (i in seq_len(nrow(dat))) {
+      if (dat[i, "downturn_local"] == "Downturn" & (dat[i, "downturn_local"] != dat[i, "previous_period"] | is.na(dat[i, "previous_period"]))) {
+        j <- j + 1
+        dat[i, "downturn_local"]  <- paste0("Downturn", j)
+      }
+      if (dat[i, "downturn_local"] == "Downturn") {
+        dat[i, "downturn_local"]  <- paste0("Downturn", j)
+      }
+    }
+    dat$downturn_local <- as.factor(dat$downturn_local)
+    # Filter DT periods less than 12 months
+    summary <- dat %>%
+      group_by(downturn_local) %>%
+      summarise(Count = n(), Min = min(!!parameter_enq, na.rm = T), first = dplyr::first(date)) %>%
+      filter(Count < 4)
+    # Increase 4 quarters for DT periods less than 12 months
+    for (i in unique(summary$first)) {
+      start <- which(dat$date == i)
+      end <- which(dat$date == i)+3
+      dat[start:end, "downturn_local"] <- dat[start, "downturn_local"]
+    }
+    # Plot results
+    plot_dates <- ggplot(data = dat, aes(x = date, group = 1)) +
+      geom_line(aes_(y = parameter_enq, colour = parameter_name), size = 1) +
+      geom_line(aes(y = summary_table$P25, colour = "Pctl 25% Threshold"), size = 1, linetype = "dashed") +
+      geom_tile(aes(y = 0, height = Inf, fill = downturn_local), alpha = 0.5) +
+      theme_minimal() +
+      theme(axis.text.x = element_text(angle = 60), text = element_text(family = "Chevin", size = 15)) +
+      labs(title = wrap_text(paste0(parameter_name, " by Date "), 50), subtitle =  paste0("Min:", summary_table$Min, " Interval: ", summary_table$WDT), x = "Date", y = parameter_name) +
+      scale_color_manual(name = parameter_name, values = op_palette, guide = guide_legend(fill = NULL, colour = op_palette)) +
+      scale_fill_manual(values = op_palette)
+    # Save Plot
+    ggsave(plot_dates, file = paste0(params$user_path, params$base_path,  "Plots/", suffix, "_", parameter_name, "_Vs_Date_Local", ".jpeg"),  width = 8, units = "in")
+  } else{
+    # Case when the macro-economic variable experiences peaks in crisis periods
+    dat <- dat %>%
+      mutate(downturn = ifelse(!!parameter_enq < summary_table$final_threshold_max | is.na(!!parameter_enq), "No Downturn", "Downturn"))
+    # Calculate duration of downturn
+    # Identification of the different periods of default
+    dat$previous_period <- lag(dat$downturn, 1)
+    j <- 0
+    for (i in 1:nrow(dat)) {
+      if (dat[i, "downturn"] == "Downturn" & (dat[i, "downturn"] != dat[i, "previous_period"] | is.na(dat[i, "previous_period"]))) {
+        j <- j + 1
+        dat[i, "downturn"]  <- paste0("Downturn", j)
+      }
+      if (dat[i, "downturn"] == "Downturn"){
+        dat[i, "downturn"]  <- paste0("Downturn", j)
+      }
+    }
+    # Create downturn flag
+    dat$downturn <- as.factor(dat$downturn)
+    downturn_dates <- toString(unique(dat[dat$downturn == "Downturn", c("Date")]))
+    # Filter DT periods less than 12 months
+    summary <- dat %>%
+      group_by(downturn) %>%
+      summarise(Count = n(), Min = min(!!parameter_enq, na.rm = T), first = dplyr::first(date)) %>% 
+      filter(Count < 4) %>% 
+      slice(which.min(Min))
+    # Increase 4 quarters for DT periods less than 12 months  
+    for (i in unique(summary$first)) {
+      start <- which(dat$date == i)
+      end <- which(dat$date == i)+3
+      dat[start:end, "downturn"] <- dat[start, "downturn"]
+    }
+    dat$downturn <- ifelse(substr(dat$downturn,1,1)=="D", "Downturn", "No Downturn")
+    print(unique(dat$downturn))
+    # Generate plot
+    plot_dates <- ggplot(data = dat, aes(x = date, group = 1)) +
+      geom_line(aes_(y = parameter_enq, colour = parameter_name), size = 1) +
+      geom_line(aes(y = summary_table$final_threshold_max, colour = "Max Threshold "), size = 1, linetype = "dashed") +
+      geom_line(aes(y = summary_table$P75, colour = "Pctl 75% Threshold"), size = 1, linetype = "dashed") +
+      geom_tile(aes(y = 0, height = Inf, fill = downturn), alpha = 0.5) +
+      theme_minimal() +
+      theme(axis.text.x = element_text(angle = 60), text = element_text(family = "Chevin", size = 15)) +
+      labs(title = wrap_text(paste0(parameter_name, " by Date"), 50), subtitle = paste0("Downturn: ", summary$first, "; Max:", summary_table$Max, " Interval: ", summary_table$WDT
+      ), x = "Date", y = parameter_name) +
+      scale_color_manual(name = parameter_name, values = op_palette, guide = guide_legend(fill = NULL, colour = op_palette)) +
+      scale_fill_manual(values = colors)
+    # Save plots
+    ggsave(plot_dates, file = paste0(params$user_path, params$base_path,  "Plots/", suffix, "_", parameter_name, "_Vs_Date", ".jpeg"),  width = 8, units = "in")
+    # Find local max
+    dat <- data.frame(dat)
+    col <- dat %>%
+      dplyr::select(!!parameter_enq)
+    local_ <- dat[findPeaks(unlist(col)),]
+    summary_table_locals <- local_ %>%
+      summarize("point" = !!parameter_enq, "P25" = summary_table$P25, "P75" = summary_table$P75) %>%
+      mutate(WDT = abs(P75 - P25) / 10, final_threshold_max = point - abs(P75 - P25) / 10) %>%
+      filter(final_threshold_max > summary_table$P75)
+    # Create downturn flag
+    dat <- dat %>%
+      mutate(downturn_local = ifelse(!!parameter_enq < summary_table_locals$final_threshold_max | is.na(!!parameter_enq), "No Downturn", "Downturn"))
+    # Calculate duration of downturn
+    dat$previous_period <- lag(dat$downturn_local, 1)
+    j <- 0
+    for (i in 1:nrow(dat)) {
+      if(dat[i, "downturn_local"] == "Downturn" & (dat[i,"downturn_local"] != dat[i, "previous_period"] | is.na(dat[i, "previous_period"]))) {
+        j <- j + 1
+        dat[i, "downturn_local"]  <- paste0("Downturn", j)
+      }
+      if(dat[i, "downturn_local"] == "Downturn"){
+        dat[i,"downturn_local"]  <- paste0("Downturn", j)
+      }
+    }
+    dat$downturn_local <- as.factor(dat$downturn_local)
+    downturn_dates <- toString(unique(dat[dat$downturn_local == "Downturn", c("date")]))
+    # Filter DT periods less than 12 months
+    summary <- dat %>%
+      group_by(downturn_local) %>%
+      summarise(Count = n(), Min = min(!!parameter_enq, na.rm = T), first = dplyr::first(date)) %>%
+      filter(Count < 4)
+    # Increase 4 quarters for DT periods less than 12 months
+    for (i in unique(summary$first)) {
+      print(i)
+      start <- which(dat$date == i)
+      end <- which(dat$date == i) + 3
+      dat[start:end, "downturn_local"] <- dat[start, "downturn_local"]
+    }
+    # Plot results
+    plot_dates <- ggplot(data = dat, aes(x = date, group = 1)) +
+      geom_line(aes_(y = parameter_enq, colour = parameter_name), size = 1) +
+      geom_line(aes(y = summary_table$P75, colour = "Pctl 75% Threshold"), size = 1, linetype = "dashed") +
+      geom_tile(aes(y = 0, height = Inf, fill = downturn_local), alpha = 0.5) +
+      theme_minimal() +
+      theme(axis.text.x = element_text(angle = 60), text = element_text(family = "Chevin", size = 15)) +
+      labs(title = wrap_text(paste0(parameter_name, " by Date "), 50), subtitle =  paste0("Max:", summary_table$Max, " Interval: ", summary_table$WDT), x = "Date", y = parameter_name) +
+      scale_color_manual(name = parameter_name, values = op_palette, guide = guide_legend(fill = NULL, colour = op_palette)) +
+      scale_fill_manual(values = op_palette)
+    # Save Plot
+    ggsave(plot_dates, file = paste0(params$user_path, params$base_path,  "Plots/", suffix, "_", parameter_name, "_Vs_Date_Local", ".jpeg"),  width = 8, units = "in")
+  }
+  return(dat)
+}
+```
+
+correlations: Function that calculates the specified correlation between the variables of the dataset
+@param: 
+  dataset: dataset with the time series
+  output_name: Name added to the output file
+  method: Method of the correlation (spearman, pearson...)
+@output: 
+  Plots: 
+    Correlation_method_output_name.jpeg: correlation plot
+  Datasets:
+    Correlation matrix between the variables
+
+```{r Correlations functions, include=TRUE, warning=FALSE, message=FALSE}
+# Get upper triangle of the correlation matrix
+get_upper_tri <- function(cormat){
+  cormat[lower.tri(cormat)]<- NA
+  return(cormat)
+}
+
+# Function that calculates the sepearman and Pearson Correlation of the dataset
+correlations <- function(dataset, output_name, method){
+  colnames(dataset) <- gsub("_", " ", colnames(dataset))
+  cormat <- round(cor(na.omit(dataset), method = method),2)
+  write.table(cormat, file=paste0(params$user_path, params$base_path,"/Tables/", "Correlation_", method, "_",output_name,".csv"), sep=";", dec=",", row.names = T, col.names = T)
+  melted_cormat <- melt(get_upper_tri(cormat), na.rm = TRUE)
+  # Plot results
+  corPlot <- ggplot(data = melted_cormat, aes(Var2, Var1, fill = value))+
+    geom_tile(color = "white")+
+    scale_fill_gradient2(low = "darkblue", high = op_palette[1], mid = "grey90", 
+                         midpoint = 0, limit = c(-1,1), space = "Lab", 
+                         name= paste0(method, "\nCorrelation")) +
+    theme_minimal()+ 
+    theme(axis.text.x = element_text(angle = 90, vjust = 0.5, 
+                                     size = 9, hjust = 1))+
+    theme(axis.text.y = element_text(angle = 0, vjust = 0.5, 
+                                     size = 9, hjust = 1),axis.title.x = element_blank(),
+          axis.title.y = element_blank())+
+    coord_fixed()
+  # Save plot
+  ggsave(corPlot, file=paste0(params$user_path, params$base_path, "Plots/", "Correlation_", method, "_",output_name,".jpeg"),  width=8, units="in")
+  return(cormat)
+}
+```
+
+correlation_check: Function that checks if two variables are correlated
+@param: 
+  data: dataset with the time series
+  parameter_1: Variable 1 that will be tested for correlation 
+  parameter_2: Variable 2 that will be tested for correlation
+  parameter_1_name: Variable 1 name in a readable way 
+  parameter_2_name: Variable 2 name in a readable way
+  factor: factor to change the plot scale of the 2 variable
+@output: 
+  Plots: 
+    Corr_parameter_1_name_Vs_parameter_2_name.jpeg: Plot of the time series for both parameters. 
+
+```{r correlation check, include=TRUE, warning=FALSE, message=FALSE}
+correlation_check <- function(data, parameter_1, parameter_2, parameter_1_name, parameter_2_name, factor = 1) {
+  parameter_1_enq <- enquo(parameter_1)
+  parameter_2_enq <- enquo(parameter_2)
+  
+  param_1 <- data %>% 
+    dplyr::select(!!parameter_1_enq)
+  param_2 <- data %>% 
+    dplyr::select(!!parameter_2_enq)
+  
+  # Calculate correlation
+  pearson_correlation <- round(cor(param_1, param_2, method = "pearson", use = "complete.obs"),3)
+  spearman_correlation <- round(cor(param_1, param_2, method = "spearman", use = "complete.obs"),3)
+  
+  # Modify series with factor for representing it
+  data <- data %>%
+    dplyr::mutate("fac" = !!parameter_2_enq * factor)
+  
+  plot_correlations <- ggplot(data = data, aes(x = date, group = 1)) +
+    geom_line(aes_(y = parameter_1_enq, colour = parameter_1_name), size = 1) +
+    geom_line(aes(y = fac, colour = parameter_2_name), size = 1) +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 60), text = element_text(family = "Chevin", size = 15)) +
+    labs(title = wrap_text(paste0(parameter_1_name, " and ", parameter_2_name), 50), subtitle = paste0("Pearson: ", pearson_correlation, "; Spearman: ", spearman_correlation),
+         x = "Date", y = parameter_1_name) +
+    scale_y_continuous(name = , sec.axis = sec_axis(~./ factor, name = "GDP")) +
+    scale_color_manual(name = "Series", values = op_palette, guide = guide_legend(fill = NULL, colour = op_palette))
+  
+  ggsave(plot_correlations, file=paste0(params$user_path, params$base_path,  "Plots/", "Corr_", parameter_1_name, "_Vs_", parameter_2_name, ".jpeg"),  width=8, units="in")
+  
+  return(plot_correlations)
+}
+```
+
+######################
+# 2. Data extraction
+######################
+
+```{r Data Extraction, include=TRUE, warning=FALSE, message=FALSE}
+start_time <- Sys.time()
+
+my_data <- read_excel(paste0(params$user_path, params$base_path, "Economic_factors.xlsx"), sheet = "Macrobond download", skip = 3)
+
+colnames(my_data) <- c("date2", "GDP", "unemployment", "real_estate_old", "real_estate", "earnings", "sector_account", "consumer_price_index", "deposit_loans", "consumer_surveys",                       "expenditure_approach_national", "expenditure_approach_durable", "BIS", "vehicles")
+# Remove the 2022
+my_data <- my_data[year(my_data$date2) < 2022, ]
+my_data$date <- as.yearqtr(my_data$date2, format = "%Y-%m-%d")
+```
+
+# Adjustments
+```{r Adjustments, include=TRUE, warning=FALSE, message=FALSE}
+# Adjustments
+adjustments <- data.frame("date" = my_data$date)
+
+# Price Index
+adjustments$price_index <- my_data$consumer_price_index / 100
+
+# House prices
+adjustments$house_prices_old <- my_data$real_estate_old
+adjustments$house_prices_new <- my_data$real_estate
+adjustments$house_prices_nominal <- ifelse(is.na(adjustments$house_prices_new), my_data$real_estate_old/ (my_data$real_estate_old[which(!is.na(my_data$real_estate))[1]] / my_data$real_estate[which(!is.na(my_data$real_estate))[1]]), adjustments$house_prices_new)
+adjustments$house_prices_real <- adjustments$house_prices_nominal / adjustments$price_index
+
+# Household Debt
+adjustments$household_debt_nominal <- my_data$deposit_loans / 1000000000
+adjustments$household_debt_real <- adjustments$household_debt_nominal / adjustments$price_index
+
+# Disposable income
+adjustments$disposable_income_nominal <- my_data$sector_account / 1000000000 
+adjustments$disposable_income_real <- adjustments$disposable_income_nominal / adjustments$price_index
+
+# Households earnings
+adjustments$households_earnings_nominal <- my_data$earnings
+adjustments$households_earnings_real <- adjustments$households_earnings_nominal / adjustments$price_index
+
+# BIS
+adjustments$BIS <- my_data$BIS / 1000000000
+adjustments$households_debt_BIS <- adjustments$BIS / adjustments$price_index
+```
+
+# Levels
+```{r Levels, include=TRUE, warning=FALSE, message=FALSE}
+# levels
+levels <- data.frame("date" = my_data$date)
+
+# GDP
+levels$GDP <- my_data$GDP / 1000000000
+
+# Unemployment Rate
+levels$unemployment_rate <- my_data$unemployment
+
+# House Prices 
+levels$house_prices_nominal <- adjustments$house_prices_nominal
+levels$house_prices_real <- adjustments$house_prices_real
+
+# Household debt
+levels$household_debt <- adjustments$household_debt_real
+
+# Households disposable income 
+levels$households_disposable_income <- adjustments$disposable_income_real
+
+# Households earnings	
+levels$households_earnings <- adjustments$households_earnings_real
+
+# Consumer Confidence Index
+levels$consumer_confidence_index <- my_data$consumer_surveys
+
+# Households consumption, total	
+levels$households_consumption_total <- my_data$expenditure_approach_national / 1000000000
+
+# Households consumption, durables
+levels$households_consumption_durables <- my_data$expenditure_approach_durable / 1000000000
+
+# BIS
+levels$households_debt_BIS <- adjustments$households_debt_BIS
+
+# New Vehicles Registrations
+levels$new_vehicles_registrations <- my_data$vehicles
+
+# Ratio Debt/GDP
+levels$ratio_debt_GDP <- levels$household_debt / levels$GDP
+```
+
+# Stationary
+```{r Stationary, include=TRUE, warning=FALSE, message=FALSE}
+# Stationary
+stationary <- data.frame("date" = my_data$date)
+
+# GDP
+stationary$GDP <- levels$GDP/lag(levels$GDP, 4) - 1
+
+# Unemployment rate	
+stationary$unemployment_rate <- levels$unemployment
+
+# House Prices
+stationary$house_prices_nominal <- levels$house_prices_nominal/lag(levels$house_prices_nominal, 4) - 1
+stationary$house_prices_real <- levels$house_prices_real/lag(levels$house_prices_real, 4) - 1
+
+# Household debt
+stationary$household_debt <- levels$household_debt/lag(levels$household_debt, 4) - 1
+
+# Households disposable income
+stationary$households_disposable_income <- levels$households_disposable_income/lag(levels$households_disposable_income, 4) - 1
+
+# Households earnings
+stationary$households_earnings <- levels$households_earnings/lag(levels$households_earnings, 4) - 1
+
+# Consumer Confidence Index
+stationary$consumer_confidence_index <- levels$consumer_confidence_index
+stationary$consumer_confidence_index_lag_1q <- lag(levels$consumer_confidence_index, 1)
+stationary$consumer_confidence_index_lag_2q <- lag(levels$consumer_confidence_index, 2)
+stationary$consumer_confidence_index_lag_3q <- lag(levels$consumer_confidence_index, 3)
+stationary$consumer_confidence_index_lag_4q <- lag(levels$consumer_confidence_index, 4)
+
+# Households consumption, total	
+stationary$households_consumption_total <- levels$households_consumption_total/lag(levels$households_consumption_total, 4) - 1
+
+# Households consumption, durables
+stationary$households_consumption_durables <- levels$households_consumption_durables/lag(levels$households_consumption_durables, 4) - 1
+
+# BIS
+stationary$households_debt_BIS <- levels$households_debt_BIS/lag(levels$households_debt_BIS, 4) - 1
+
+# New Vehicles Registrations
+stationary$new_vehicles_registrations <- levels$new_vehicles_registrations/lag(levels$new_vehicles_registrations, 4) - 1
+
+# Ratio Debt/GDP
+stationary$ratio_debt_GDP <- levels$ratio_debt_GDP/lag(levels$ratio_debt_GDP, 4) - 1
+
+# # Save in excel file for validation
+# wb <- createWorkbook()
+# addWorksheet(wb, "my_data")
+# addWorksheet(wb, "adjustments")
+# addWorksheet(wb, "levels")
+# addWorksheet(wb, "stationary")
+# # Write data
+# writeData(wb, "my_data", my_data, startRow = 1, startCol = 1)
+# writeData(wb, "adjustments", adjustments, startRow = 1, startCol = 1)
+# writeData(wb, "levels", levels, startRow = 1, startCol = 1)
+# writeData(wb, "stationary", stationary, startRow = 1, startCol = 1)
+# # Save workbook
+# saveWorkbook(wb, file = paste0(params$user_path, params$base_path, "test.xlsx"), overwrite = TRUE)
+```
+
+# Correlation analysis 
+```{r Correlation analysis against, include=TRUE, warning=FALSE, message=FALSE}
+correlation_check(my_data[year(my_data$date) >= 2001, ], expenditure_approach_national, GDP, "Expenditure Approach National", "GDP")
+correlation_check(my_data[year(my_data$date) >= 2001, ], expenditure_approach_durable, GDP, "Expenditure Approach Durable", "GDP")
+correlation_check(stationary[year(stationary$date) >= 2001, ], households_consumption_durables, GDP, "Households Consumption Durables", "GDP")
+correlation_check(stationary[year(stationary$date) >= 2001, ], households_consumption_total, GDP, "Households Consumption Total", "GDP")
+correlation_check(stationary[year(stationary$date) >= 2001, ], households_disposable_income, households_earnings, "Households Disposable Income", "Household Earnings")
+correlation_check(stationary[year(stationary$date) >= 2001, ], new_vehicles_registrations, GDP, "New Vehicles Registration", "GDP")
+
+# Lag consumer confidence index and see correlations
+correlation_check(stationary[year(stationary$date) >= 2001, ], consumer_confidence_index, GDP, "Consumer Confidence Index", "GDP", 100)
+correlation_check(stationary[year(stationary$date) >= 2001, ], consumer_confidence_index_lag_1q, GDP, "Consumer Confidence Index Lag 1Q", "GDP", 100)
+correlation_check(stationary[year(stationary$date) >= 2001, ], consumer_confidence_index_lag_2q, GDP, "Consumer Confidence Index Lag 2Q", "GDP", 100)
+correlation_check(stationary[year(stationary$date) >= 2001, ], consumer_confidence_index_lag_3q, GDP, "Consumer Confidence Index Lag 3Q", "GDP", 100)
+correlation_check(stationary[year(stationary$date) >= 2001, ], consumer_confidence_index_lag_4q, GDP, "Consumer Confidence Index Lag 4Q", "GDP", 100)
+
+```
+
+
+##########################################
+# 3. Identification of downturn periods
+##########################################
+
+# Identification of unique most severe downturn per variable and Identification of multiple downturn periods of an economic variable
+# Plots
+
+```{r Plots, include=TRUE, warning=FALSE, message=FALSE}
+# # Selected VARIABLES
+# 2001
+a <- analyzer(stationary[year(stationary$date) >= 2001, ], GDP, "GDP", "2001_stationary", 1)
+aa <- a[,c("date", "downturn", "downturn_local")]
+colnames(aa) <- c("date", "downturn_GDP", "downturn_local_GDP")
+stationary2 <- merge(stationary, aa, by = c("date"), all.x = T)
+
+a <- analyzer(levels[year(levels$date) >= 2001, ], unemployment_rate, "Unemployment Rate", "2001_levels", 0)
+aa <- a[,c("date", "downturn", "downturn_local")]
+colnames(aa) <- c("date", "downturn_Unemployment", "downturn_local_Unemployment")
+levels2 <- merge(levels, aa, by = c("date"), all.x = T)
+
+a <- analyzer(stationary[year(stationary$date) >= 2001, ], house_prices_nominal, "House Prices Nominal", "2001_stationary", 1)
+aa <- a[,c("date", "downturn", "downturn_local")]
+colnames(aa) <- c("date", "downturn_House Prices Nominal", "downturn_local_House Prices Nominal")
+stationary2 <- merge(stationary2, aa, by = c("date"), all.x = T)
+
+a <- analyzer(stationary[year(stationary$date) >= 2001, ], household_debt, "Household debt", "2001_stationary", 0)
+aa <- a[,c("date", "downturn", "downturn_local")]
+colnames(aa) <- c("date", "downturn_Household debt", "downturn_local_Household debt")
+stationary2 <- merge(stationary2, aa, by = c("date"), all.x = T)
+
+# Save in excel file
+wb <- createWorkbook()
+addWorksheet(wb, "my_data")
+addWorksheet(wb, "adjustments")
+addWorksheet(wb, "levels")
+addWorksheet(wb, "stationary")
+# Write data
+writeData(wb, "my_data", my_data, startRow = 1, startCol = 1)
+writeData(wb, "adjustments", adjustments, startRow = 1, startCol = 1)
+writeData(wb, "levels", levels2, startRow = 1, startCol = 1)
+writeData(wb, "stationary", stationary2, startRow = 1, startCol = 1)
+# Save workbook
+saveWorkbook(wb, file = paste0(params$user_path, params$base_path, "2001.xlsx"), overwrite = TRUE)
+```
+
+# Identification of downturn periods with multiple variables
+Method 1:
+Correlation analysis between variables
+```{r Correlation analysis between variables, include=TRUE, warning=FALSE, message=FALSE}
+stationary_corr_spearman <- get_upper_tri(correlations(stationary[,2:length(stationary)],"stationary", "spearman"))
+stationary_corr_pearson <- get_upper_tri(correlations(stationary[,2:length(stationary)],"stationary", "pearson"))
+levels_corr_spearman <- get_upper_tri(correlations(levels[, 2:length(levels)],"levels", "spearman"))
+levels_corr_pearson <- get_upper_tri(correlations(levels[, 2:length(levels)],"levels", "pearson"))
+
+stationary_corr_spearman[abs(stationary_corr_spearman) < 0.7 | stationary_corr_spearman == 1] <- NA
+stationary_corr_pearson[abs(stationary_corr_pearson) < 0.7 | stationary_corr_pearson == 1] <- NA
+
+levels_corr_spearman[abs(levels_corr_spearman) < 0.7 | levels_corr_spearman == 1] <- NA
+levels_corr_pearson[abs(levels_corr_pearson) < 0.7 | levels_corr_pearson == 1] <- NA
+
+# Variables Highly correlated (>0.7)
+# In shifts
+# house prices real - house prices nominal
+# households disposable income - household debt
+# households_consumption_total - GDP
+# In levels
+# unemployment_rate - GDP
+```
+
+# Method 2:
+# Unique DT identifier
+
+find_same_downturn_period: Function that goes through each column searching for the downturn flag. If it finds it, it sets a range of 4 quarters after and 4 quarters before, and searchs in the downturn flag created by other variables. .analyzes the provided time series by the variable date
+  @param: 
+    dat: dataset with the time series
+    parameter: Column of the dataset that wants to be analyzed
+    parameter_name: Readable name of the parameter
+    suffix: name that can be added to the output files
+    min: (0): the downturn is identifier if the time series reaches a minimum; (1): the downturn is identified if the time series reaches a maximum
+  @output: 
+    Plots: 
+      parameter_name_Vs_Date.jpeg: Identification of one downturn period (section 15.3.5)
+      parameter_name_Vs_Date_Local.jpeg: Identification of different downturn periods (section 15.3.6)
+    Datasets:
+      input dataset with the columns downturn and downturn_local, for the one downturn identification and for the multiple downturn identification respectively
+```{r Unique DT identifier, include=TRUE, warning=FALSE, message=FALSE}
+# Secured
+# GDP
+# Unemployment rate
+# House prices or price indices, residential
+# Consumer Confidence Index
+#
+# Non-Secured
+# GDP
+# Unemployment rate
+# Total household debt (if available)
+# Disposable personal income (if available)
+# Consumer Confidence Index
+
+find_same_downturn_period <- function(file_name, secured = 0) {
+  if (secured == 1) {
+    # Studied variables for secured portfolio
+    list <- c("date", "downturn_GDP", "downturn_Unemployment", "downturn_House.Prices.Real", "downturn_Consumer.Confidence.Index")
+  } else {
+    # Studied variables for un-secured portfolio
+    list <- c("date", "downturn_GDP", "downturn_Unemployment", "downturn_Household", "downturn_Household.debt", "downturn_Household.earnings", "downturn_Consumer.Confidence.Index")
+  }
+  # Read DT periods
+  df3 <- read.xlsx(xlsxFile = paste0(params$user_path, params$base_path, file_name), sheet = 3)
+  levels_dt <- df3[ , names(df3) %in% list] #grepl("^d", names(df3)) & !grepl("local", names(df3))]
+  df4 <- read.xlsx(xlsxFile = paste0(params$user_path, params$base_path, file_name), sheet = 4)
+  stationary_dt <- df4[ , names(df4) %in% list]#grepl("^d", names(df4)) & !grepl("local", names(df4))]
+  colnames(levels_dt)[2] <- paste0(colnames(levels_dt)[2], "_levels")
+  # Merge levels and stationary downturns flags
+  studied <- na.omit(merge(x = stationary_dt, y = levels_dt, by = "date"))
+  results <- data.frame(
+      "variable" = character(), 
+      "start" = character(),
+      "end" = character(),
+      "coincidences" = character(),
+      "total_start" = character(),
+      "total_end" = character(),
+    stringsAsFactors = TRUE)
+  # For each column/variable we get the DT period
+  for (i in seq_len(length(studied))) {
+    print(colnames(studied)[i])
+    # Get initial and last date of the DT period
+    dt_period <- studied %>% filter(.[[i]] == 'Downturn')
+    dt_period <- dt_period %>% group_by_at(i) %>% summarise(first = first(date), last = last(date))
+    first <- which(studied$date == dt_period$first, arr.ind = TRUE) 
+    last <- which(studied$date == dt_period$last, arr.ind = TRUE)
+    # Filter 16 (i.e. 5 quarters) months before and after
+    variable <- c(substring(colnames(studied)[i], 10, nchar(colnames(studied)[i])))
+    coincidences <- c(" ")
+    if (length(first) | length(last) != 0) { 
+      if (first > 5) {
+        first <- first - 5
+      } else {
+        first <- 1
+      }
+      if (last < nrow(studied) - 5) {
+        last <- last + 5
+      } else {
+        last <- nrow(studied)
+      }
+      min_start <- dt_period$first
+      max_end <- dt_period$last
+      studied_period <- studied[first:last, !colnames(studied) %in% colnames(studied)[i]]
+      for (j in seq_len(length(studied_period))) {
+        studied_period_dt <- studied_period %>% filter(.[[j]] == 'Downturn')
+        # Find DT period
+        if (nrow(studied_period_dt) > 0 ){
+          print(colnames(studied_period_dt)[j])
+          dt_period_coincidence <- studied_period_dt %>% group_by_at(j) %>% summarise(first = first(date), last = last(date))
+          coincidences <- paste0(coincidences, paste(substring(colnames(studied_period_dt)[j], 10, nchar(colnames(studied_period_dt)[j])), ": ",dt_period_coincidence$first, "-", dt_period_coincidence$last), sep = "; ")
+          if (min_start > dt_period_coincidence$first) {
+            min_start <- dt_period_coincidence$first
+          }
+          if (max_end < dt_period_coincidence$last) {
+            max_end <- dt_period_coincidence$last
+          }
+        }
+      }
+      results <- rbind(results, data.frame("variable" = variable, "start" = dt_period$first, "end" = dt_period$last,  "coincidences" = coincidences, "total_start" = min_start, "total_end" = max_end))
+    }
+  }
+  return(results)
+}
+
+secured <- find_same_downturn_period("2001.xlsx", 1)
+unsecured <- find_same_downturn_period("2001.xlsx", 0)
+```
