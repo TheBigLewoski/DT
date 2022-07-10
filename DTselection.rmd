@@ -31,10 +31,10 @@ library(openxlsx)
 
 #Color palette and font for plotting & data simulation
 # Color palette for plotting
-op_palette <- c("#FF6A10", "#6E6E6E", "#C37E00", "#7F8700", "#2B8700", "#00802F", "#00765D", "#E0E0E0", "#FFA26B", "#CC9E4D", "#969742", "#628D47", "#297E53", "#006D5E", "#A5A5A5", "#A23C00", "#8F5D00", "#757600", "#548A2B", "#1A9A5E", "#00A981")
+palette <- c("#FF6A10", "#6E6E6E", "#C37E00", "#7F8700", "#2B8700", "#00802F", "#00765D", "#E0E0E0", "#FFA26B", "#CC9E4D", "#969742", "#628D47", "#297E53", "#006D5E", "#A5A5A5", "#A23C00", "#8F5D00", "#757600", "#548A2B", "#1A9A5E", "#00A981")
 
 # Take a look at the colors
-# pie(rep(1, length(op_palette)), col = op_palette, labels = op_palette)
+# pie(rep(1, length(palette)), col = palette, labels = palette)
 
 # Declare font for plotting
 windowsFonts(Chevin = windowsFont("OP Chevin Pro Light"))
@@ -141,7 +141,7 @@ analyzer <- function(dat, parameter, parameter_name, suffix = "", min = 0) {
       theme_minimal() +
       theme(axis.text.x = element_text(angle = 60), text = element_text(family = "Chevin", size = 15)) +
       labs(title = wrap_text(paste0(parameter_name, " by Date "), 50), subtitle =  paste0("Downturn: ", summary$first, "; Min:", summary_table$Min, " Interval: ", summary_table$WDT), x = "Date", y = parameter_name) +
-      scale_color_manual(name = parameter_name, values = op_palette, guide = guide_legend(fill = NULL, colour = op_palette)) +
+      scale_color_manual(name = parameter_name, values = palette, guide = guide_legend(fill = NULL, colour = palette)) +
       scale_fill_manual(values = colors)
     # Save Plot
     ggsave(plot_dates, file = paste0(params$user_path, params$base_path,  "Plots/", suffix, "_", parameter_name, "_Vs_Date", ".jpeg"),  width = 8, units = "in")
@@ -189,8 +189,8 @@ analyzer <- function(dat, parameter, parameter_name, suffix = "", min = 0) {
       theme_minimal() +
       theme(axis.text.x = element_text(angle = 60), text = element_text(family = "Chevin", size = 15)) +
       labs(title = wrap_text(paste0(parameter_name, " by Date "), 50), subtitle =  paste0("Min:", summary_table$Min, " Interval: ", summary_table$WDT), x = "Date", y = parameter_name) +
-      scale_color_manual(name = parameter_name, values = op_palette, guide = guide_legend(fill = NULL, colour = op_palette)) +
-      scale_fill_manual(values = op_palette)
+      scale_color_manual(name = parameter_name, values = palette, guide = guide_legend(fill = NULL, colour = palette)) +
+      scale_fill_manual(values = palette)
     # Save Plot
     ggsave(plot_dates, file = paste0(params$user_path, params$base_path,  "Plots/", suffix, "_", parameter_name, "_Vs_Date_Local", ".jpeg"),  width = 8, units = "in")
   } else{
@@ -237,7 +237,7 @@ analyzer <- function(dat, parameter, parameter_name, suffix = "", min = 0) {
       theme(axis.text.x = element_text(angle = 60), text = element_text(family = "Chevin", size = 15)) +
       labs(title = wrap_text(paste0(parameter_name, " by Date"), 50), subtitle = paste0("Downturn: ", summary$first, "; Max:", summary_table$Max, " Interval: ", summary_table$WDT
       ), x = "Date", y = parameter_name) +
-      scale_color_manual(name = parameter_name, values = op_palette, guide = guide_legend(fill = NULL, colour = op_palette)) +
+      scale_color_manual(name = parameter_name, values = palette, guide = guide_legend(fill = NULL, colour = palette)) +
       scale_fill_manual(values = colors)
     # Save plots
     ggsave(plot_dates, file = paste0(params$user_path, params$base_path,  "Plots/", suffix, "_", parameter_name, "_Vs_Date", ".jpeg"),  width = 8, units = "in")
@@ -287,8 +287,8 @@ analyzer <- function(dat, parameter, parameter_name, suffix = "", min = 0) {
       theme_minimal() +
       theme(axis.text.x = element_text(angle = 60), text = element_text(family = "Chevin", size = 15)) +
       labs(title = wrap_text(paste0(parameter_name, " by Date "), 50), subtitle =  paste0("Max:", summary_table$Max, " Interval: ", summary_table$WDT), x = "Date", y = parameter_name) +
-      scale_color_manual(name = parameter_name, values = op_palette, guide = guide_legend(fill = NULL, colour = op_palette)) +
-      scale_fill_manual(values = op_palette)
+      scale_color_manual(name = parameter_name, values = palette, guide = guide_legend(fill = NULL, colour = palette)) +
+      scale_fill_manual(values = palette)
     # Save Plot
     ggsave(plot_dates, file = paste0(params$user_path, params$base_path,  "Plots/", suffix, "_", parameter_name, "_Vs_Date_Local", ".jpeg"),  width = 8, units = "in")
   }
@@ -323,7 +323,7 @@ correlations <- function(dataset, output_name, method){
   # Plot results
   corPlot <- ggplot(data = melted_cormat, aes(Var2, Var1, fill = value))+
     geom_tile(color = "white")+
-    scale_fill_gradient2(low = "darkblue", high = op_palette[1], mid = "grey90", 
+    scale_fill_gradient2(low = "darkblue", high = palette[1], mid = "grey90", 
                          midpoint = 0, limit = c(-1,1), space = "Lab", 
                          name= paste0(method, "\nCorrelation")) +
     theme_minimal()+ 
@@ -377,7 +377,7 @@ correlation_check <- function(data, parameter_1, parameter_2, parameter_1_name, 
     labs(title = wrap_text(paste0(parameter_1_name, " and ", parameter_2_name), 50), subtitle = paste0("Pearson: ", pearson_correlation, "; Spearman: ", spearman_correlation),
          x = "Date", y = parameter_1_name) +
     scale_y_continuous(name = , sec.axis = sec_axis(~./ factor, name = "GDP")) +
-    scale_color_manual(name = "Series", values = op_palette, guide = guide_legend(fill = NULL, colour = op_palette))
+    scale_color_manual(name = "Series", values = palette, guide = guide_legend(fill = NULL, colour = palette))
   
   ggsave(plot_correlations, file=paste0(params$user_path, params$base_path,  "Plots/", "Corr_", parameter_1_name, "_Vs_", parameter_2_name, ".jpeg"),  width=8, units="in")
   
